@@ -1,58 +1,86 @@
-"""Daily weather log for Stockholm.
+"""Daily weather log for Stockholm, based on SMHI open data.
 
-Fetches yesterday's weather from Open-Meteo (free, no API key), appends it to
-data/weather.csv and regenerates README.md with the latest days.
+Downloads hourly observations from SMHI (free, no API key), turns them into one
+row per calendar day in data/weather.csv and regenerates README.md.
+Missing days within the last BACKFILL_DAYS are filled in automatically, so a
+skipped run does not leave a gap.
+
+Data source: SMHI (Swedish Meteorological and Hydrological Institute),
+licensed under CC BY 4.0.
 Uses only the Python standard library.
 """
 
 import csv
 import json
-import os
 import sys
 import time
 import urllib.request
-from datetime import datetime, timezone
+from collections import defaultdict
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parent.parent
 CSV_PATH = ROOT / "data" / "weather.csv"
 README_PATH = ROOT / "README.md"
 
-CITY = os.environ.get("CITY", "Stockholm")
-LAT = os.environ.get("LAT", "59.33")
-LON = os.environ.get("LON", "18.07")
-TZ = os.environ.get("TZ_NAME", "Europe/Stockholm")
+TZ = ZoneInfo("Europe/Stockholm")
+BACKFILL_DAYS = 14
 SHOW_DAYS = 14
+MIN_HOURS = 18  # a day needs at least this many hourly readings to be logged
 
-FIELDS = ["date", "temp_max", "temp_min", "precipitation_mm", "wind_max_kmh"]
+API = "https://opendata-download-metobs.smhi.se/api/version/1.0"
+TEMP_STATION = ("98230", "Stockholm-Observatoriekullen A")
+WIND_STATION = ("97200", "Stockholm-Bromma Flygplats")
+PARAM_TEMP = "1"    # air temperature, hourly instantaneous value (°C)
+PARAM_PRECIP = "7"  # precipitation, hourly sum (mm)
+PARAM_WIND = "4"    # wind speed, hourly 10-minute mean (m/s)
 
-API_URL = (
-    "https://api.open-meteo.com/v1/forecast"
-    f"?latitude={LAT}&longitude={LON}"
-    "&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,wind_speed_10m_max"
-    f"&timezone={TZ.replace('/', '%2F')}"
-    "&past_days=1&forecast_days=1"
-)
+FIELDS = ["date", "temp_max", "temp_min", "temp_mean", "precipitation_mm", "wind_max_ms"]
 
 
-def fetch_yesterday(retries: int = 3) -> dict | None:
-    """Return yesterday's complete weather row, or None if the API is unreachable."""
+def fetch(param: str, station: str, retries: int = 3) -> list[dict] | None:
+    url = f"{API}/parameter/{param}/station/{station}/period/latest-months/data.json"
+    req = urllib.request.Request(url, headers={"User-Agent": "weather-log (github.com/Erik-Sandqvist/weather-log)"})
     for attempt in range(1, retries + 1):
         try:
-            with urllib.request.urlopen(API_URL, timeout=20) as resp:
-                daily = json.load(resp)["daily"]
-            # past_days=1 -> index 0 is yesterday (a complete day), index 1 is today.
-            return {
-                "date": daily["time"][0],
-                "temp_max": daily["temperature_2m_max"][0],
-                "temp_min": daily["temperature_2m_min"][0],
-                "precipitation_mm": daily["precipitation_sum"][0],
-                "wind_max_kmh": daily["wind_speed_10m_max"][0],
-            }
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.load(resp).get("value") or []
         except Exception as exc:  # noqa: BLE001 - log and retry on any failure
-            print(f"Attempt {attempt} failed: {exc}", file=sys.stderr)
+            print(f"SMHI param {param} station {station}, attempt {attempt} failed: {exc}", file=sys.stderr)
             time.sleep(2 * attempt)
     return None
+
+
+def by_day(values: list[dict] | None, shift_hours: int = 0) -> dict[date, list[float]]:
+    """Group hourly readings by local calendar day.
+
+    shift_hours moves each timestamp back before grouping. Hourly sums are
+    stamped at the end of their hour, so precipitation uses shift_hours=1.
+    """
+    days: dict[date, list[float]] = defaultdict(list)
+    for v in values or []:
+        if v.get("quality") not in ("G", "Y") or v.get("value") in (None, ""):
+            continue
+        ts = datetime.fromtimestamp(v["date"] / 1000, timezone.utc) - timedelta(hours=shift_hours)
+        days[ts.astimezone(TZ).date()].append(float(v["value"]))
+    return days
+
+
+def summarize(day: date, temp, precip, wind) -> dict | None:
+    t = temp.get(day, [])
+    if len(t) < MIN_HOURS:
+        return None
+    p = precip.get(day, [])
+    w = wind.get(day, [])
+    return {
+        "date": day.isoformat(),
+        "temp_max": round(max(t), 1),
+        "temp_min": round(min(t), 1),
+        "temp_mean": round(sum(t) / len(t), 1),
+        "precipitation_mm": round(sum(p), 1) if len(p) >= MIN_HOURS else "",
+        "wind_max_ms": round(max(w), 1) if len(w) >= MIN_HOURS else "",
+    }
 
 
 def load_rows() -> list[dict]:
@@ -70,49 +98,67 @@ def save_rows(rows: list[dict]) -> None:
         writer.writerows(rows)
 
 
+def num(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def fmt(value) -> str:
-    return "–" if value in (None, "", "None") else str(value)
+    return "–" if num(value) is None else str(value)
 
 
 def render_readme(rows: list[dict], updated: str) -> str:
     recent = rows[-SHOW_DAYS:][::-1]
     lines = [
-        f"# 🌦️ Daily weather log – {CITY}",
+        "# 🌦️ Daily weather log – Stockholm",
         "",
-        "An automated log that fetches yesterday's weather every morning via "
-        "[Open-Meteo](https://open-meteo.com/) and commits it to this repo using GitHub Actions.",
+        "An automated log of yesterday's weather in Stockholm, built from "
+        "[SMHI open data](https://www.smhi.se/data/meteorologi/ladda-ner-meteorologiska-observationer) "
+        "and committed to this repo every morning.",
         "",
         f"**Days logged:** {len(rows)}  ",
         f"**Last updated:** {updated}",
         "",
-        f"## Last {min(SHOW_DAYS, len(rows))} days",
+        f"## Last {len(recent)} days",
         "",
-        "| Date | Max °C | Min °C | Precipitation (mm) | Max wind (km/h) |",
-        "|------|-------:|-------:|-------------------:|----------------:|",
+        "| Date | Max °C | Min °C | Mean °C | Precipitation (mm) | Max wind (m/s) |",
+        "|------|-------:|-------:|--------:|-------------------:|---------------:|",
     ]
     for r in recent:
         lines.append(
-            f"| {r['date']} | {fmt(r['temp_max'])} | {fmt(r['temp_min'])} "
-            f"| {fmt(r['precipitation_mm'])} | {fmt(r['wind_max_kmh'])} |"
+            f"| {r['date']} | {fmt(r['temp_max'])} | {fmt(r['temp_min'])} | {fmt(r['temp_mean'])} "
+            f"| {fmt(r['precipitation_mm'])} | {fmt(r['wind_max_ms'])} |"
         )
     if not recent:
-        lines.append("| – | – | – | – | – |")
+        lines.append("| – | – | – | – | – | – |")
 
-    temps = [float(r["temp_max"]) for r in rows if r["temp_max"] not in ("", "None")]
-    if temps:
-        warmest = max(rows, key=lambda r: float(r["temp_max"]) if r["temp_max"] not in ("", "None") else -999)
-        coldest = min(rows, key=lambda r: float(r["temp_min"]) if r["temp_min"] not in ("", "None") else 999)
+    with_max = [r for r in rows if num(r["temp_max"]) is not None]
+    with_min = [r for r in rows if num(r["temp_min"]) is not None]
+    with_rain = [r for r in rows if num(r["precipitation_mm"]) is not None]
+    if with_max and with_min:
+        warmest = max(with_max, key=lambda r: num(r["temp_max"]))
+        coldest = min(with_min, key=lambda r: num(r["temp_min"]))
         lines += [
             "",
             "## All-time records",
             "",
-            f"- 🔥 Warmest day: **{warmest['temp_max']} °C** ({warmest['date']})",
-            f"- 🧊 Coldest night: **{coldest['temp_min']} °C** ({coldest['date']})",
+            f"- 🔥 Warmest: **{warmest['temp_max']} °C** ({warmest['date']})",
+            f"- 🧊 Coldest: **{coldest['temp_min']} °C** ({coldest['date']})",
         ]
+        if with_rain:
+            wettest = max(with_rain, key=lambda r: num(r["precipitation_mm"]))
+            lines.append(f"- 🌧️ Wettest: **{wettest['precipitation_mm']} mm** ({wettest['date']})")
 
     lines += [
         "",
         "Full history: [`data/weather.csv`](data/weather.csv)",
+        "",
+        "---",
+        "",
+        f"Source: [SMHI](https://www.smhi.se/), [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). "
+        f"Temperature and precipitation from {TEMP_STATION[1]}, wind from {WIND_STATION[1]}.",
         "",
     ]
     return "\n".join(lines)
@@ -120,16 +166,34 @@ def render_readme(rows: list[dict], updated: str) -> str:
 
 def main() -> None:
     rows = load_rows()
-    new = fetch_yesterday()
-    if new:
-        rows = [r for r in rows if r["date"] != new["date"]] + [new]
-        rows.sort(key=lambda r: r["date"])
-        save_rows(rows)
-        print(f"Logged {new['date']}: {new}")
-    else:
-        print("Could not fetch weather data; updating timestamp only.", file=sys.stderr)
+    have = {r["date"] for r in rows}
 
-    updated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    temp_raw = fetch(PARAM_TEMP, TEMP_STATION[0])
+    if temp_raw is None:
+        print("Could not reach SMHI; updating timestamp only.", file=sys.stderr)
+    else:
+        temp = by_day(temp_raw)
+        precip = by_day(fetch(PARAM_PRECIP, TEMP_STATION[0]), shift_hours=1)
+        wind = by_day(fetch(PARAM_WIND, WIND_STATION[0]))
+
+        yesterday = datetime.now(TZ).date() - timedelta(days=1)
+        added = []
+        for offset in range(BACKFILL_DAYS - 1, -1, -1):
+            day = yesterday - timedelta(days=offset)
+            if day.isoformat() in have:
+                continue
+            row = summarize(day, temp, precip, wind)
+            if row:
+                rows.append(row)
+                added.append(row["date"])
+        if added:
+            rows.sort(key=lambda r: r["date"])
+            save_rows(rows)
+            print(f"Logged {len(added)} day(s): {', '.join(added)}")
+        else:
+            print("No new complete days to log.")
+
+    updated = datetime.now(TZ).strftime("%Y-%m-%d %H:%M %Z")
     README_PATH.write_text(render_readme(rows, updated), encoding="utf-8")
 
 

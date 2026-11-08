@@ -1,8 +1,11 @@
 name: Daily weather log
 
+# The daily schedule currently runs as a scheduled Claude Code task, because
+# GitHub Actions is blocked on this account by a billing lock. To move back to
+# Actions once the lock is lifted, uncomment the schedule below.
 on:
-  schedule:
-    - cron: '17 6 * * *'   # every day at 06:17 UTC
+  # schedule:
+  #   - cron: '17 6 * * *'   # every day at 06:17 UTC
   workflow_dispatch:        # allows manual runs from the Actions tab
 
 permissions:
@@ -34,5 +37,5 @@ jobs:
             echo "No changes to commit."
             exit 0
           fi
-          git commit -m "Weather log: $(date -u +%F)"
+          git commit -m "Weather log: $(TZ=Europe/Stockholm date +%F)"
           git push
