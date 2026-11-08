@@ -3,8 +3,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-git fetch origin main
-git checkout -B main FETCH_HEAD
+# Sync with main first, then restart so the newest version of this script runs.
+if [ -z "${DAILY_SYNCED:-}" ]; then
+  git fetch origin main
+  git checkout -B main FETCH_HEAD
+  DAILY_SYNCED=1 exec bash scripts/daily.sh "$@"
+fi
 
 python3 scripts/update.py
 
