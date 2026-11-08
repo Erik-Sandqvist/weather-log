@@ -14,8 +14,10 @@ if git diff --cached --quiet; then
   exit 0
 fi
 
-git -c user.name="Erik" -c user.email="104572224+Erik-Sandqvist@users.noreply.github.com" \
-  commit -m "Weather log: $(TZ=Europe/Stockholm date +%F)"
+# Erik is the author (this is what counts on the GitHub contribution graph);
+# the committer is whoever runs the script, so commits stay signed/verified.
+git commit --author="Erik <104572224+Erik-Sandqvist@users.noreply.github.com>" \
+  -m "Weather log: $(TZ=Europe/Stockholm date +%F)"
 
 for delay in 0 2 4 8 16; do
   sleep "$delay"
