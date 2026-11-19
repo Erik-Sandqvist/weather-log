@@ -2,13 +2,14 @@
 
 An automated log of yesterday's weather in Stockholm, built from [SMHI open data](https://www.smhi.se/data/meteorologi/ladda-ner-meteorologiska-observationer) and committed to this repo every morning.
 
-**Days logged:** 24  
-**Last updated:** 2026-11-18 07:18 CET
+**Days logged:** 25  
+**Last updated:** 2026-11-19 07:17 CET
 
 ## Last 14 days
 
 | Date | Max °C | Min °C | Mean °C | Precipitation (mm) | Max wind (m/s) |
 |------|-------:|-------:|--------:|-------------------:|---------------:|
+| 2026-11-18 | 2.3 | -1.2 | 0.4 | 1.0 | 4.0 |
 | 2026-11-17 | 4.1 | 1.9 | 3.1 | 1.0 | 4.0 |
 | 2026-11-16 | 6.0 | 3.8 | 5.0 | 5.2 | 4.0 |
 | 2026-11-15 | 7.1 | 5.1 | 6.0 | 0.0 | 7.0 |
@@ -22,12 +23,11 @@ An automated log of yesterday's weather in Stockholm, built from [SMHI open data
 | 2026-11-07 | 4.5 | 1.8 | 2.8 | 0.0 | 4.0 |
 | 2026-11-06 | 5.9 | 2.1 | 3.8 | 0.0 | 3.0 |
 | 2026-11-05 | 9.1 | 4.7 | 6.6 | 0.0 | 5.0 |
-| 2026-11-04 | 10.7 | 5.5 | 7.6 | 0.0 | 4.0 |
 
 ## All-time records
 
 - 🔥 Warmest: **12.7 °C** (2026-10-28)
-- 🧊 Coldest: **0.1 °C** (2026-11-14)
+- 🧊 Coldest: **-1.2 °C** (2026-11-18)
 - 🌧️ Wettest: **6.8 mm** (2026-11-12)
 
 Full history: [`data/weather.csv`](data/weather.csv)
